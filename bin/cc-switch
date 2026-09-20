@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Non-interactive entry point. For interactive use, source cc-switch.sh from
+# your rc file instead so `cc` is a shell function.
+set -euo pipefail
+_self="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=cc-switch.sh
+. "$_self/cc-switch.sh"
+cc "$@"

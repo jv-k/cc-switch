@@ -1,0 +1,7 @@
+# Append to ~/.config/starship.toml and add $custom.cc to your format string.
+[custom.cc]
+command = "cat ${CC_HOME:-$HOME/.config/cc-switch}/live 2>/dev/null"
+when = "test -s ${CC_HOME:-$HOME/.config/cc-switch}/live"
+format = "[cc:$output]($style) "
+style = "bright-black"
+shell = ["bash", "--noprofile", "--norc"]

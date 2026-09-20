@@ -1,0 +1,3 @@
+# The library is sourced into an interactive shell, so top-level variables are
+# intentionally global and `cc` is invoked by the user, not by this file.
+disable=SC2034
