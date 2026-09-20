@@ -17,6 +17,12 @@
 : "${CC_KEYCHAIN_SERVICE:=Claude Code-credentials}"
 : "${CC_ACCOUNT_KEYS:=oauthAccount}"   # space-separated top-level keys of ~/.claude.json
 : "${CC_LOCK_TIMEOUT:=5}"              # seconds
+: "${CC_LIMIT_DEFAULT:=5h}"            # assumed window when you mark a sub spent
+: "${CC_CLAUDE_BIN:=claude}"
+: "${CC_RESUME_FLAG:=--continue}"      # --continue resumes the last session in $PWD
+# CC_SHARED: state tree that linked envs share. Resolved lazily by _cc_shared
+# so it tracks CC_CLAUDE_HOME if that is changed after sourcing.
+: "${CC_LINK_PATHS:=projects history.jsonl todos CLAUDE.md agents commands skills plugins}"
 : "${CC_PGREP_PATTERNS:=[c]laude/cli\.js [.]claude/local/claude}"  # space-separated, no spaces within a pattern
 
 # ----------------------------------------------------------------- utils ----
@@ -274,10 +280,13 @@ _cc_ls() {
     while IFS= read -r d; do
         name="$(basename "$d")"
         if [ "$name" = "$live" ]; then mark='*'; else mark=' '; fi
-        if [ -s "$d/credentials.json" ]; then
-            printf '%s %-14s %s\n' "$mark" "$name" "$(_cc_profile_email "$name")"
+        if [ ! -s "$d/credentials.json" ]; then
+            printf '%s %-14s %-30s %s\n' "$mark" "$name" '(empty)' 'run: cc capture'
+        elif _cc_is_limited "$name"; then
+            printf '%s %-14s %-30s %s\n' "$mark" "$name" "$(_cc_profile_email "$name")" \
+                "spent, back in $(_cc_human "$(( $(_cc_limit_until "$name") - $(_cc_now) ))")"
         else
-            printf '%s %-14s %s\n' "$mark" "$name" '(empty, run: cc capture)'
+            printf '%s %-14s %-30s %s\n' "$mark" "$name" "$(_cc_profile_email "$name")" 'ready'
         fi
     done
 }
@@ -293,24 +302,208 @@ _cc_doctor() {
     printf 'live account   : %s\n' "$(_cc_live_email)"
     printf 'live cred      : %s\n' \
         "$([ -n "$(_cc_read_live_cred)" ] && echo present || echo absent)"
+    printf 'shared tree    : %s\n' "$(_cc_shared)"
     printf 'account keys   : %s\n' "$CC_ACCOUNT_KEYS"
     printf 'jq             : %s\n' "$(command -v jq || echo MISSING)"
     printf 'claude running : %s\n' "$(_cc_claude_running && echo yes || echo no)"
 }
 
+# ------------------------------------------------------------- rotation ----
+#
+# The point of this layer: with 3-4 subscriptions the question is never "which
+# account" but "which account still has quota". Claude Code does not expose
+# limit state to scripts, so the spent marker is set by you and expires on a
+# timer.
+
+_cc_now() { date +%s; }
+
+_cc_parse_dur() {   # 5h | 90m | 300s | 300
+    local d="$1" n u
+    case "$d" in
+        *h) n="${d%h}"; u=3600 ;;
+        *m) n="${d%m}"; u=60 ;;
+        *s) n="${d%s}"; u=1 ;;
+        *)  n="$d";     u=1 ;;
+    esac
+    case "$n" in *[!0-9]*|'') return 1 ;; esac
+    printf '%s' "$((n * u))"
+}
+
+_cc_human() {       # seconds -> 4h07m / 12m / now
+    local s="$1"
+    if   [ "$s" -le 0 ];    then printf 'now'
+    elif [ "$s" -lt 3600 ]; then printf '%dm' "$(( (s + 59) / 60 ))"
+    else printf '%dh%02dm' "$((s / 3600))" "$(( (s % 3600) / 60 ))"
+    fi
+}
+
+_cc_limit_until() { cat "$CC_HOME/profiles/$1/spent" 2>/dev/null; }
+
+_cc_is_limited() {
+    local until
+    until="$(_cc_limit_until "$1")"
+    [ -n "$until" ] || return 1
+    case "$until" in *[!0-9]*) return 1 ;; esac
+    if [ "$until" -gt "$(_cc_now)" ]; then
+        return 0
+    fi
+    rm -f "$CC_HOME/profiles/$1/spent"   # expired, self-clearing
+    return 1
+}
+
+_cc_mark_spent() {
+    local name="${1:-$(_cc_which)}" dur="${2:-$CC_LIMIT_DEFAULT}" secs
+    [ -n "$name" ] || { _cc_err "no live profile to mark"; return 1; }
+    [ -d "$CC_HOME/profiles/$name" ] || { _cc_err "unknown profile '$name'"; return 1; }
+    secs="$(_cc_parse_dur "$dur")" || { _cc_err "bad duration '$dur' (try 5h, 90m, 300s)"; return 1; }
+    printf '%s' "$(( $(_cc_now) + secs ))" > "$CC_HOME/profiles/$name/spent"
+    printf "cc: '%s' marked spent, back in %s\n" "$name" "$(_cc_human "$secs")"
+}
+
+_cc_unmark() {
+    local name="${1:-$(_cc_which)}"
+    if [ "$name" = "--all" ]; then
+        _cc_ring | while IFS= read -r n; do rm -f "$CC_HOME/profiles/$n/spent"; done
+        echo "cc: cleared all spent markers"
+        return 0
+    fi
+    [ -d "$CC_HOME/profiles/$name" ] || { _cc_err "unknown profile '$name'"; return 1; }
+    rm -f "$CC_HOME/profiles/$name/spent"
+    printf "cc: '%s' available again\n" "$name"
+}
+
+_cc_ring() {
+    find "$CC_HOME/profiles" -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+        | sed 's#.*/##' | sort
+}
+
+# Next usable profile in ring order, starting after the live one.
+_cc_next_available() {
+    local live ring rotated
+    ring="$(_cc_ring)"
+    [ -n "$ring" ] || return 1
+    live="$(_cc_which)"
+    if [ -n "$live" ] && printf '%s\n' "$ring" | grep -qx -- "$live"; then
+        rotated="$(printf '%s\n' "$ring" | awk -v live="$live" '
+            { a[NR] = $0; if ($0 == live) idx = NR }
+            END { for (i = 1; i <= NR; i++) print a[((idx + i - 1) % NR) + 1] }')"
+    else
+        rotated="$ring"
+    fi
+    printf '%s\n' "$rotated" | while IFS= read -r n; do
+        [ -n "$n" ] || continue
+        [ -s "$CC_HOME/profiles/$n/credentials.json" ] || continue
+        _cc_is_limited "$n" && continue
+        printf '%s\n' "$n"
+        break
+    done | head -n1
+}
+
+_cc_soonest() {
+    local best='' best_t='' until
+    _cc_ring | while IFS= read -r n; do
+        until="$(_cc_limit_until "$n")"
+        [ -n "$until" ] && printf '%s %s\n' "$until" "$n"
+    done | sort -n | head -n1 | while read -r t n; do
+        printf 'cc: earliest is %s in %s\n' "$n" "$(_cc_human "$((t - $(_cc_now)))")"
+    done
+}
+
+_cc_next() {
+    local target
+    target="$(_cc_next_available)"
+    if [ -z "$target" ]; then
+        _cc_err "every profile is spent or empty"
+        _cc_soonest
+        return 1
+    fi
+    _cc_use "$target"
+}
+
+_cc_resume() {
+    command -v "$CC_CLAUDE_BIN" >/dev/null 2>&1 \
+        || { _cc_err "'$CC_CLAUDE_BIN' not found on PATH"; return 1; }
+    "$CC_CLAUDE_BIN" "$CC_RESUME_FLAG" "$@"
+}
+
+# go: resume here, rotating first only if the live sub is spent
+_cc_go() {
+    local live
+    live="$(_cc_which)"
+    if [ -z "$live" ] || _cc_is_limited "$live"; then
+        _cc_next || return 1
+    fi
+    _cc_resume "$@"
+}
+
+# flip: this one is out of quota. Mark it, rotate, pick the session back up.
+_cc_flip() {
+    local live
+    live="$(_cc_which)"
+    [ -n "$live" ] && _cc_mark_spent "$live" "$CC_LIMIT_DEFAULT" >/dev/null
+    _cc_next || return 1
+    _cc_resume "$@"
+}
+
+# ------------------------------------------------- concurrent (linked) env ----
+#
+# Optional. Gives a profile its own CLAUDE_CONFIG_DIR so several subs can run
+# at once in different terminals, with transcripts and project config symlinked
+# back to one shared tree so --continue still sees everything.
+# Only works if CLAUDE_CONFIG_DIR actually isolates auth on your install.
+# See "Concurrent mode" in the README for the test.
+
+_cc_shared() { printf '%s' "${CC_SHARED:-$CC_CLAUDE_HOME}"; }
+
+_cc_link() {
+    local name="$1" dir shared
+    shared="$(_cc_shared)"
+    _cc_valid_name "$name" || { _cc_err "usage: cc link <profile>"; return 1; }
+    dir="$CC_HOME/envs/$name"
+    mkdir -p "$dir" || return 1
+    printf '%s\n' "$CC_LINK_PATHS" | tr ' ' '\n' | while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        [ -e "$shared/$rel" ] || continue
+        [ -e "$dir/$rel" ] && continue
+        ln -s "$shared/$rel" "$dir/$rel" 2>/dev/null
+    done
+    printf "cc: linked env at %s\n" "$dir"
+    printf "    use it with:  eval \"\$(cc env %s)\"\n" "$name"
+}
+
+_cc_env() {
+    local name="$1" dir
+    _cc_valid_name "$name" || { _cc_err "usage: cc env <profile>"; return 1; }
+    dir="$CC_HOME/envs/$name"
+    [ -d "$dir" ] || { _cc_err "no linked env for '$name'. Run: cc link $name"; return 1; }
+    printf 'export CLAUDE_CONFIG_DIR=%s\n' "$dir"
+}
+
 _cc_usage() {
     cat <<'MSG'
-cc-switch — swap Claude Code accounts in place
+cc-switch — rotate Claude Code subscriptions without losing the thread
 
+ running out of quota
+  cc flip [args]        mark this sub spent, rotate to the next, resume here
+  cc go [args]          resume here, rotating first only if this sub is spent
+  cc next               rotate to the next sub with quota, do not launch
+  cc spent [p] [dur]    mark a sub spent (default 5h)
+  cc clear [p|--all]    clear a spent marker early
+
+ profiles
   cc use <profile>      switch the live credential (auto-saves the outgoing one)
   cc add <profile>      create an empty profile
   cc capture [profile]  snapshot the live credential into a profile
-  cc ls                 list profiles, * marks live
+  cc ls                 list profiles with quota state, * marks live
   cc which              print the live profile name
   cc rm <profile>       delete a stored profile
-  cc doctor             print resolved paths, backend, and live identity
+  cc doctor             resolved paths, backend, live identity
 
-Never switch while claude is running.
+ concurrent mode (optional)
+  cc link <profile>     build a CLAUDE_CONFIG_DIR env with shared transcripts
+  cc env <profile>      print the export line: eval "$(cc env work)"
+
+Quit claude before switching. It holds the token in memory.
 MSG
 }
 
@@ -325,7 +518,14 @@ cc() {
                         _cc_capture "$target" \
                             && printf "cc: captured '%s' (%s)\n" \
                                  "$target" "$(_cc_profile_email "$target")" ;;
-        ls|list)        _cc_ls ;;
+        ls|list|status) _cc_ls ;;
+        next)           _cc_need jq || return 1; _cc_next ;;
+        flip)           _cc_need jq || return 1; _cc_flip "$@" ;;
+        go)             _cc_need jq || return 1; _cc_go "$@" ;;
+        spent|limit)    _cc_mark_spent "$@" ;;
+        clear|unspent)  _cc_unmark "$@" ;;
+        link)           _cc_link "$@" ;;
+        env)            _cc_env "$@" ;;
         which|current)  _cc_which ;;
         rm|remove)      _cc_rm "$@" ;;
         doctor)         _cc_doctor ;;

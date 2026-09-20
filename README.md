@@ -1,6 +1,6 @@
 # cc-switch
 
-Swap Claude Code accounts in place, without fragmenting your local state.
+Rotate between several Claude Code subscriptions without losing the thread.
 
 The usual advice for running two Claude subscriptions is to toggle
 `CLAUDE_CONFIG_DIR`. That works, but it moves *everything*: each account gets
@@ -14,12 +14,18 @@ which `oauthAccount` block sits in `~/.claude.json`.
 
 ```
 $ cc ls
-  backup         bob@example.com
-* main           alice@example.com
+* work           alice@example.com    spent, back in 3h12m
+  personal       bob@example.com      ready
+  client         carol@example.com    ready
 
-$ cc use backup
-cc: now 'backup' (bob@example.com)
+$ cc flip
+cc: 'work' marked spent, back in 5h00m
+cc: now 'personal' (bob@example.com)
+[claude resumes the session you were in]
 ```
+
+`cc flip` is the whole point: this sub is out, move to the next one with
+quota, pick the conversation back up in the same directory. One command.
 
 ## Requirements
 
@@ -57,10 +63,77 @@ cc ls
 `c1` and `c2` are aliased to `cc use main` and `cc use backup`. Set
 `CC_NO_ALIASES=1` before sourcing to skip them.
 
+## Running out of quota
+
+The workflow with three or four subscriptions is not "which account" but
+"which account still has quota, and can it pick up where I left off".
+
+```bash
+cc flip          # this one is spent: mark it, rotate, resume here
+cc go            # resume here, rotating first only if this sub is spent
+cc next          # rotate without launching
+cc spent [p] 2h  # mark a sub spent for a custom window
+cc clear --all   # everything is back, forget the markers
+```
+
+Both `flip` and `go` pass extra arguments straight through, so
+`cc go --model opus` works.
+
+Resume is `claude --continue`, which picks up the most recent session in the
+current directory. It works across a switch because there is only ever one
+`projects/` tree. The fresh sub sees the spent sub's transcript as its own,
+because as far as the filesystem is concerned it is. There is no server-side
+session object to migrate.
+
+Claude Code does not expose limit state to scripts, so the spent marker is
+something you set rather than something cc-switch detects. It carries a
+timestamp and clears itself when the window elapses, defaulting to five hours.
+That is a guess at the rolling window, not a reading of your actual quota.
+Weekly caps are not modelled at all.
+
+## Concurrent mode
+
+Serial rotation means quitting Claude Code to switch, because it holds the
+token in memory. If you would rather have all your subs live at once in
+different terminals, give each one its own `CLAUDE_CONFIG_DIR` with the shared
+state symlinked back:
+
+```bash
+cc link work
+eval "$(cc env work)"    # in that terminal only
+claude
+```
+
+`cc link` symlinks `projects`, `history.jsonl`, `todos`, `CLAUDE.md`, `agents`,
+`commands`, `skills`, and `plugins` back to `~/.claude`, so `--continue` still
+sees every session regardless of which terminal you are in. Settings and
+credentials stay per-env. Tune the list with `CC_LINK_PATHS`.
+
+This only works if `CLAUDE_CONFIG_DIR` genuinely isolates auth on your install.
+On macOS it may not: some builds keep OAuth in a single shared Keychain item
+that the variable does not scope. Test before relying on it.
+
+```bash
+mkdir -p /tmp/cc-probe
+CLAUDE_CONFIG_DIR=/tmp/cc-probe claude   # /login as a second account, then quit
+ls /tmp/cc-probe/.credentials.json       # present means isolation works
+```
+
+If that file does not appear, your install is Keychain-backed and concurrent
+mode is off the table. Use serial rotation, which swaps the Keychain item
+directly and works either way.
+
 ## Commands
 
 | Command | Description |
 | --- | --- |
+| `cc flip [args]` | Mark the live sub spent, rotate, resume in this directory. |
+| `cc go [args]` | Resume here, rotating first only if the live sub is spent. |
+| `cc next` | Rotate to the next sub with quota. Does not launch. |
+| `cc spent [p] [dur]` | Mark a sub spent. Default `5h`. Accepts `90m`, `300s`. |
+| `cc clear [p\|--all]` | Clear a spent marker early. |
+| `cc link <profile>` | Build a `CLAUDE_CONFIG_DIR` env with shared transcripts. |
+| `cc env <profile>` | Print the export line for a linked env. |
 | `cc use <profile>` | Switch the live credential. Saves the outgoing one first. |
 | `cc add <profile>` | Create an empty profile. |
 | `cc capture [profile]` | Snapshot the live credential into a profile. Defaults to the live one. |
@@ -113,15 +186,17 @@ another tab while a session is open.
 ## What it does not solve
 
 Prompt caching. Cache entries are server-side and partitioned by organization,
-so two subscriptions are two cache namespaces and every switch is a guaranteed
-full miss. Nothing local can change that. The practical cost is that your next
-turn re-writes the whole prefix — system prompt, `CLAUDE.md`, tool definitions,
-and the entire replayed transcript — at cache-write rates. Switch at session
-boundaries, and `/compact` first if the context is large.
+so each subscription is its own cache namespace and every rotation is a
+guaranteed full miss. Nothing local changes that.
 
-Local transcripts are unaffected. Session resume is a pure local replay of a
-JSONL file with no server-side session object, so a conversation started on one
-account resumes cleanly on the other.
+The cost lands on the sub you rotate *into*. Resuming a long session re-writes
+the entire prefix — system prompt, `CLAUDE.md`, tool definitions, and the whole
+replayed transcript — at cache-write rates, before the model does any work. On
+a 150K-token context that is a six-figure token charge against the fresh sub's
+window on the first message. `/compact` before `cc flip` if the session is
+large. When you are flipping because you hit a limit the cache was already
+gone, so the timing is mostly academic, but do not build a habit of bouncing
+between subs mid-task.
 
 ## Sharp edges
 
@@ -162,6 +237,11 @@ call to check, not a question this tool answers.
 | `CC_BACKEND` | auto-detected (`keychain` or `file`) |
 | `CC_PGREP_PATTERNS` | Claude Code process patterns |
 | `CC_LOCK_TIMEOUT` | `5` seconds |
+| `CC_LIMIT_DEFAULT` | `5h` |
+| `CC_CLAUDE_BIN` | `claude` |
+| `CC_RESUME_FLAG` | `--continue` |
+| `CC_SHARED` | `$CC_CLAUDE_HOME` |
+| `CC_LINK_PATHS` | `projects history.jsonl todos CLAUDE.md agents commands skills plugins` |
 | `CC_NO_ALIASES` | unset (defines `c1`, `c2`) |
 
 ## Tests
@@ -170,9 +250,11 @@ call to check, not a question this tool answers.
 bash tests/run.sh
 ```
 
-Runs against a throwaway `HOME` with the file backend, covering the switch
-round trip, background-refresh capture, drift detection, the running-process
-and lock guards, and file permissions. The Keychain path cannot be exercised
+55 assertions against a throwaway `HOME` with the file backend, covering the
+switch round trip, background-refresh capture, drift detection, ring rotation
+with wrap-around and all-spent, marker expiry, `go`/`flip` against a stub
+`claude` binary, linked-env symlinking, and the running-process, lock, and
+permission guards. The Keychain path cannot be exercised
 off macOS and is covered by CI on `macos-latest` plus `cc doctor`.
 
 ## Licence
