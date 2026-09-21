@@ -112,6 +112,11 @@ claude
 sees every session regardless of which terminal you are in. Settings and
 credentials stay per-env. Tune the list with `CC_LINK_PATHS`.
 
+Claude Code keeps `.claude.json` *inside* `CLAUDE_CONFIG_DIR` when that is set,
+rather than at `~/.claude.json`, so `cc` follows it: in a linked-env shell,
+`cc capture` snapshots that env's account and `cc use` merges into that env's
+file. `cc doctor` prints the config dir when one is in force.
+
 This only works if `CLAUDE_CONFIG_DIR` genuinely isolates auth on your install.
 On macOS it may not: some builds keep OAuth in a single shared Keychain item
 that the variable does not scope. Test before relying on it.
@@ -258,7 +263,7 @@ call to check, not a question this tool answers.
 | --- | --- |
 | `CC_HOME` | `${XDG_CONFIG_HOME:-~/.config}/cc-switch` |
 | `CC_CLAUDE_HOME` | `~/.claude` |
-| `CC_CLAUDE_JSON` | `~/.claude.json` |
+| `CC_CLAUDE_JSON` | `$CLAUDE_CONFIG_DIR/.claude.json` when that is set, else `~/.claude.json` |
 | `CC_KEYCHAIN_SERVICE` | `Claude Code-credentials` |
 | `CC_ACCOUNT_KEYS` | `oauthAccount` |
 | `CC_BACKEND` | auto-detected (`keychain` or `file`); forcing `file` on a Keychain machine is a no-op switch, and `cc doctor` says so |
@@ -283,11 +288,12 @@ are never styled: they are meant for prompts and `eval`.
 bash tests/run.sh
 ```
 
-122 assertions against a throwaway `HOME` with the file backend, covering the
+127 assertions against a throwaway `HOME` with the file backend, covering the
 switch round trip, background-refresh capture, drift detection, ring rotation
 with wrap-around and all-spent, marker expiry and reaping, `go`/`flip` against
 a stub `claude` binary, linked-env symlinking, command aliases, the default
-process patterns against native and VS Code command lines, the colour
+process patterns against native and VS Code command lines, the identity file
+following `CLAUDE_CONFIG_DIR`, the colour
 gate and that styling adds no text, message wording, the prompt snippets'
 quota state (statusline and Starship `when` checks in bash, zsh and p10k under
 zsh when present) and their agreement with the library on `CC_HOME`, and the

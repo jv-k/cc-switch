@@ -37,7 +37,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `cc doctor` now warns when `CC_BACKEND=file` is forced on a machine that
+- In a linked env, `cc capture` snapshotted the wrong account and `cc use`
+  merged into the wrong file. Claude Code keeps `.claude.json` inside
+  `CLAUDE_CONFIG_DIR` when that is set, but `CC_CLAUDE_JSON` was fixed to
+  `$HOME/.claude.json` at source time, so concurrent mode read the serial
+  identity. It is now resolved lazily and follows `CLAUDE_CONFIG_DIR`; setting
+  `CC_CLAUDE_JSON` explicitly still wins. `cc doctor` shows the config dir
+  when one is in force. on a machine that
   keeps the credential in the Keychain. That combination writes a
   `.credentials.json` Claude Code never reads, so `cc use` reported success
   and changed nothing.

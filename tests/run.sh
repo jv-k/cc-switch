@@ -282,6 +282,31 @@ is "go rotates when spent"    "$(_cc_which)"            "a"
 is "go resumed after rotate"  "$(tail -n1 "$CC_LAUNCH_LOG")" "--continue"
 teardown
 
+# ---- the identity file follows CLAUDE_CONFIG_DIR ----------------------------
+# With CLAUDE_CONFIG_DIR set, Claude Code keeps .claude.json inside it; with it
+# unset, at $HOME/.claude.json. cc must read the same file Claude Code writes,
+# or a linked env captures the serial account instead of its own.
+setup
+echo "identity file location"
+unset CC_CLAUDE_JSON
+env_dir="$SANDBOX/envs/work"; mkdir -p "$env_dir"
+is "defaults to \$HOME"        "$(CLAUDE_CONFIG_DIR='' _cc_claude_json)"           "$SANDBOX/.claude.json"
+is "follows the config dir"    "$(CLAUDE_CONFIG_DIR=$env_dir _cc_claude_json)"   "$env_dir/.claude.json"
+is "explicit setting wins"     "$(CC_CLAUDE_JSON=$SANDBOX/x.json CLAUDE_CONFIG_DIR=$env_dir _cc_claude_json)" "$SANDBOX/x.json"
+
+# a capture inside a linked env must snapshot that env's account, not the serial one
+export CC_CLAUDE_JSON="$SANDBOX/.claude.json"
+login_as serial@example.com tok-serial
+cc add outer >/dev/null && cc capture outer >/dev/null
+unset CC_CLAUDE_JSON
+printf '{"oauthAccount":{"emailAddress":"linked@example.com"}}' > "$env_dir/.claude.json"
+printf '{"claudeAiOauth":{"accessToken":"tok-linked"}}' > "$CC_CLAUDE_HOME/.credentials.json"
+CLAUDE_CONFIG_DIR="$env_dir" cc add inner >/dev/null
+CLAUDE_CONFIG_DIR="$env_dir" cc capture inner >/dev/null
+is "captures the env account"  "$(_cc_profile_email inner)"  "linked@example.com"
+is "serial capture unaffected" "$(_cc_profile_email outer)"  "serial@example.com"
+teardown
+
 # ---- linked env -------------------------------------------------------------
 setup
 echo "linked env"

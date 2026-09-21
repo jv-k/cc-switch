@@ -15,7 +15,8 @@
 
 : "${CC_HOME:=${XDG_CONFIG_HOME:-$HOME/.config}/cc-switch}"
 : "${CC_CLAUDE_HOME:=$HOME/.claude}"
-: "${CC_CLAUDE_JSON:=$HOME/.claude.json}"
+# CC_CLAUDE_JSON: the identity file. Resolved lazily by _cc_claude_json, because
+# its location depends on CLAUDE_CONFIG_DIR, which a linked env sets per shell.
 : "${CC_KEYCHAIN_SERVICE:=Claude Code-credentials}"
 : "${CC_ACCOUNT_KEYS:=oauthAccount}"   # space-separated top-level keys of ~/.claude.json
 : "${CC_LOCK_TIMEOUT:=5}"              # seconds
@@ -216,7 +217,17 @@ _cc_email_of() {
     jq -r '.. | objects | (.emailAddress // .email // empty)' "$1" 2>/dev/null | head -n1
 }
 
-_cc_live_email()    { _cc_email_of "$CC_CLAUDE_JSON"; }
+# Claude Code keeps .claude.json inside CLAUDE_CONFIG_DIR when that is set, and
+# at $HOME/.claude.json when it is not. Read the file Claude Code actually
+# writes, or a linked env captures the serial account instead of its own.
+_cc_claude_json() {
+    if [ -n "${CC_CLAUDE_JSON:-}" ]; then printf '%s' "$CC_CLAUDE_JSON"
+    elif [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then printf '%s/.claude.json' "$CLAUDE_CONFIG_DIR"
+    else printf '%s/.claude.json' "$HOME"
+    fi
+}
+
+_cc_live_email()    { _cc_email_of "$(_cc_claude_json)"; }
 _cc_which()         { cat "$CC_HOME/live" 2>/dev/null; }
 _cc_profile_email() { _cc_email_of "$CC_HOME/profiles/$1/account.json"; }
 
@@ -241,7 +252,7 @@ _cc_claude_running() { [ -n "$(_cc_claude_procs)" ]; }
 # ------------------------------------------------------ capture and apply ----
 
 _cc_capture() {
-    local name="${1:-$(_cc_which)}" dir cred
+    local name="${1:-$(_cc_which)}" dir cred json
     [ -n "$name" ] || { _cc_err "Usage: cc capture <profile> (no live profile to default to)"; return 1; }
     _cc_valid_name "$name" || { _cc_err "Bad profile name: '$name'"; return 1; }
     dir="$CC_HOME/profiles/$name"
@@ -251,11 +262,12 @@ _cc_capture() {
     [ -n "$cred" ] || { _cc_err "No live credential found (backend: $(_cc_backend))"; return 1; }
     printf '%s' "$cred" | _cc_write "$dir/credentials.json" || return 1
 
-    if [ -s "$CC_CLAUDE_JSON" ]; then
+    json="$(_cc_claude_json)"
+    if [ -s "$json" ]; then
         jq --arg keys "$CC_ACCOUNT_KEYS" \
            '($keys | split(" ")) as $k | with_entries(select(.key as $x | $k | index($x)))' \
-           "$CC_CLAUDE_JSON" 2>/dev/null | _cc_write "$dir/account.json" \
-            || _cc_warn "Could not snapshot account keys from $CC_CLAUDE_JSON"
+           "$json" 2>/dev/null | _cc_write "$dir/account.json" \
+            || _cc_warn "Could not snapshot account keys from $json"
     fi
 
     printf '%s' "$name" > "$CC_HOME/live"
@@ -263,17 +275,18 @@ _cc_capture() {
 }
 
 _cc_apply() {
-    local name="$1" dir="$CC_HOME/profiles/$1"
+    local name="$1" dir="$CC_HOME/profiles/$1" json
     [ -s "$dir/credentials.json" ] || {
         _cc_err "Profile '$name' holds no credential. Run: cc capture $name"
         return 1
     }
     _cc_write_live_cred < "$dir/credentials.json" || return 1
 
-    if [ -s "$dir/account.json" ] && [ -s "$CC_CLAUDE_JSON" ]; then
-        jq -s '.[0] * .[1]' "$CC_CLAUDE_JSON" "$dir/account.json" 2>/dev/null \
-            | _cc_write "$CC_CLAUDE_JSON" \
-            || { _cc_err "Failed to merge account metadata into $CC_CLAUDE_JSON"; return 1; }
+    json="$(_cc_claude_json)"
+    if [ -s "$dir/account.json" ] && [ -s "$json" ]; then
+        jq -s '.[0] * .[1]' "$json" "$dir/account.json" 2>/dev/null \
+            | _cc_write "$json" \
+            || { _cc_err "Failed to merge account metadata into $json"; return 1; }
     fi
 
     printf '%s' "$name" > "$CC_HOME/live"
@@ -283,7 +296,7 @@ _cc_apply() {
 # -------------------------------------------------------------- commands ----
 
 _cc_use() {
-    local target="$1" live rc=0 snap_cred snap_json procs
+    local target="$1" live rc=0 snap_cred snap_json procs json
     _cc_valid_name "$target" || { _cc_err "Usage: cc use <profile>"; return 1; }
     _cc_require_profile "$target" || return 1
 
@@ -317,7 +330,8 @@ _cc_use() {
     # snapshot for rollback
     snap_cred="$(mktemp)"; snap_json="$(mktemp)"
     _cc_read_live_cred > "$snap_cred" 2>/dev/null
-    [ -s "$CC_CLAUDE_JSON" ] && cp "$CC_CLAUDE_JSON" "$snap_json" 2>/dev/null
+    json="$(_cc_claude_json)"
+    [ -s "$json" ] && cp "$json" "$snap_json" 2>/dev/null
 
     if _cc_apply "$target"; then
         if [ -n "$live" ]; then
@@ -329,7 +343,7 @@ _cc_use() {
         rc=1
         _cc_err "Apply failed, rolling back"
         [ -s "$snap_cred" ] && _cc_write_live_cred < "$snap_cred" >/dev/null 2>&1
-        [ -s "$snap_json" ] && cp "$snap_json" "$CC_CLAUDE_JSON" 2>/dev/null
+        [ -s "$snap_json" ] && cp "$snap_json" "$json" 2>/dev/null
         [ -n "$live" ] && printf '%s' "$live" > "$CC_HOME/live"
     fi
 
@@ -399,7 +413,8 @@ _cc_doctor() {
     procs="$(_cc_claude_procs)"
     _cc_kv 'cc home'      "$CC_HOME"
     _cc_kv 'claude home'  "$CC_CLAUDE_HOME"
-    _cc_kv 'claude json'  "$CC_CLAUDE_JSON"
+    _cc_kv 'claude json'  "$(_cc_claude_json)"
+    [ -n "${CLAUDE_CONFIG_DIR:-}" ] && _cc_kv 'config dir' "$CLAUDE_CONFIG_DIR" "$_cc_s_norm"
     _cc_kv 'backend'      "$(_cc_backend)"
     # A forced file backend on a Keychain machine writes .credentials.json,
     # which Claude Code never reads: cc use reports success and changes nothing.
