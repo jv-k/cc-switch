@@ -10,17 +10,20 @@ environments and `claude --resume` that can only see half your sessions.
 
 cc-switch swaps only the credential. One `~/.claude`. One history. One config.
 The only thing that changes between profiles is which OAuth token is live and
-which `oauthAccount` block sits in `~/.claude.json`.
+which `oauthAccount` block sits in `~/.claude.json`. (Concurrent mode, below,
+is the opt-in exception: a per-profile `CLAUDE_CONFIG_DIR` with the shared
+tree symlinked back in.)
 
 ```
 $ cc ls
-* work           alice@example.com    spent, back in 3h12m
-  personal       bob@example.com      ready
-  client         carol@example.com    ready
+  PROFILE        ACCOUNT                        STATUS
+→ work           alice@example.com              spent, back in 3h12m
+  personal       bob@example.com                ready
+  client         carol@example.com              ready
 
 $ cc flip
-cc: 'work' marked spent, back in 5h00m
-cc: now 'personal' (bob@example.com)
+✔ Marked work spent, back in 5h00m
+✔ Switched work → personal (bob@example.com)
 [claude resumes the session you were in]
 ```
 
@@ -137,10 +140,13 @@ directly and works either way.
 | `cc use <profile>` | Switch the live credential. Saves the outgoing one first. |
 | `cc add <profile>` | Create an empty profile. |
 | `cc capture [profile]` | Snapshot the live credential into a profile. Defaults to the live one. |
-| `cc ls` | List profiles. `*` marks live. |
+| `cc ls` | List profiles with quota state. `→` marks live. |
 | `cc which` | Print the live profile name. For prompts and scripts. |
 | `cc rm <profile>` | Delete a stored profile. Leaves the live credential alone. |
 | `cc doctor` | Resolved paths, detected backend, live identity. |
+
+Aliases: `new`→`add`, `sync`→`capture`, `list`/`status`→`ls`, `limit`→`spent`,
+`unspent`→`clear`, `current`→`which`, `remove`→`rm`.
 
 ## How it works
 
@@ -176,12 +182,17 @@ prompt would confidently show the wrong account. `cc which` reads
 Drop-in snippets are in `prompt/`:
 
 - `zsh.zsh` — right prompt via a `precmd` hook
-- `p10k.zsh` — a `cc_account` Powerlevel10k segment
-- `starship.toml` — a `custom.cc` module
-- `statusline.sh` — Claude Code statusline showing directory, branch, profile, model, and context usage
+- `p10k.zsh` — a `cc_account` Powerlevel10k segment with `READY` and `SPENT`
+  states
+- `starship.toml` — `custom.cc` and `custom.cc_spent` modules; a custom module
+  has one style, so quota state takes two with complementary `when` checks
+- `statusline.sh` — Claude Code statusline showing directory, branch, profile,
+  model, and context usage
 
-The statusline reads the state file, so it stays correct even if you switch in
-another tab while a session is open.
+All four read the state file, so they stay correct even if you switch in
+another tab while a session is open, and they read the spent marker too: the
+profile shows green while it has quota and yellow once it is marked spent
+(the statusline adds the time to reset).
 
 ## What it does not solve
 
@@ -244,17 +255,26 @@ call to check, not a question this tool answers.
 | `CC_LINK_PATHS` | `projects history.jsonl todos CLAUDE.md agents commands skills plugins` |
 | `CC_NO_ALIASES` | unset (defines `c1`, `c2`) |
 
+Output is coloured on a terminal and plain when piped. `NO_COLOR` (any value)
+turns it off; `CLICOLOR_FORCE=1` or `FORCE_COLOR=1` turns it on without a
+terminal, for `| less -R`. stdout and stderr are decided separately, so
+`cc use x 2>log` colours the terminal but not the log. `cc which` and `cc env`
+are never styled: they are meant for prompts and `eval`.
+
 ## Tests
 
 ```bash
 bash tests/run.sh
 ```
 
-55 assertions against a throwaway `HOME` with the file backend, covering the
+109 assertions against a throwaway `HOME` with the file backend, covering the
 switch round trip, background-refresh capture, drift detection, ring rotation
-with wrap-around and all-spent, marker expiry, `go`/`flip` against a stub
-`claude` binary, linked-env symlinking, and the running-process, lock, and
-permission guards. The Keychain path cannot be exercised
+with wrap-around and all-spent, marker expiry and reaping, `go`/`flip` against
+a stub `claude` binary, linked-env symlinking, command aliases, the colour
+gate and that styling adds no text, message wording, the prompt snippets'
+quota state (statusline and Starship `when` checks in bash, zsh and p10k under
+zsh when present) and their agreement with the library on `CC_HOME`, and the
+running-process, lock, and permission guards. The Keychain path cannot be exercised
 off macOS and is covered by CI on `macos-latest` plus `cc doctor`.
 
 ## Licence

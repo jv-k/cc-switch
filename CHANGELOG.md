@@ -14,11 +14,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `cc ls` reports quota state and time to reset.
 - Concurrent mode: `cc link` and `cc env` build per-profile `CLAUDE_CONFIG_DIR`
   environments with transcripts and project config symlinked to one shared tree.
+- Coloured output on a terminal: `✔`/`ℹ`/`!`/`✖` status lines, green values,
+  dim hints, a `→` live marker and header row in `cc ls`, pill section headers
+  in `cc --help`. Off when piped or under `NO_COLOR`; `CLICOLOR_FORCE=1` or
+  `FORCE_COLOR=1` forces it. stdout and stderr are decided independently.
+- Prompt snippets and the statusline colour the profile by quota state: green
+  while it has quota, yellow once marked spent. Starship gains a `custom.cc_spent`
+  module; the p10k segment gains `READY`/`SPENT` states.
+
+### Changed
+
+- Message format. The `cc:` prefix is gone in favour of status icons, wording
+  is sentence case and profile names are no longer quoted (`✔ Switched work →
+  personal (bob@example.com)`, `✖ Unknown profile 'nope'`). `cc which` and
+  `cc env` are unchanged, so prompts and `eval` keep working; anything that
+  grepped the old messages needs updating.
+
+- Command aliases (`new`, `sync`, `list`, `status`, `limit`, `unspent`,
+  `current`, `remove`) are documented in `cc --help` and the README.
+- `cc ls` and `cc use` now fail with the missing-dependency message when `jq`
+  is absent, like the other commands that need it.
 
 ### Fixed
 
 - `CC_SHARED` resolved at source time and went stale if `CC_CLAUDE_HOME`
   changed afterwards. Now resolved lazily.
+- The Starship snippet ignored `XDG_CONFIG_HOME` when resolving `CC_HOME`, so
+  it showed no profile for anyone who sets it. A test now pins all four prompt
+  snippets to the library's default.
+- A malformed `spent` marker was ignored but left in place, so `cc next` kept
+  reporting it as the earliest reset. Every read now reaps it.
 
 ## [0.1.0] - 2026-09-20
 

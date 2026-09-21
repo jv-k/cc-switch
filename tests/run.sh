@@ -12,6 +12,8 @@ is()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$3', got '$2
 yes_() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
 no_()  { if eval "$2" >/dev/null 2>&1; then bad "$1"; else ok "$1"; fi; }
 has()  { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "no '$3' in: $2" ;; esac; }
+ESC="$(printf '\033')"
+strip() { sed "s/$ESC\[[0-9;]*m//g"; }
 
 setup() {
     SANDBOX="$(mktemp -d)"
@@ -23,6 +25,7 @@ setup() {
     unset CC_SHARED CC_CLAUDE_BIN CC_LAUNCH_LOG
     export CC_NO_ALIASES=1
     export CC_PGREP_PATTERNS='__cc_no_such_process__'
+    unset NO_COLOR CLICOLOR_FORCE FORCE_COLOR
     mkdir -p "$CC_CLAUDE_HOME"
     # shellcheck source=/dev/null
     . "$ROOT/cc-switch.sh"
@@ -63,6 +66,7 @@ is "unrelated json preserved" "$(jq -r '.projects["/tmp/x"].history[0]' "$CC_CLA
 
 cc use backup >/dev/null
 is "switch back"              "$(live_token)"             "tok-B"
+is  "capture reports"         "$(cc capture)"             "✔ Captured backup (bob@example.com)"
 teardown
 
 # ---- background refresh is saved on the way out ----------------------------
@@ -104,6 +108,9 @@ login_as alice@example.com tok-A
 cc add main >/dev/null && cc capture main >/dev/null
 no_  "rejects unknown profile"   "cc use nope"
 no_  "rejects path traversal"    "cc add ../evil"
+rm -f "$CC_HOME/live"
+has  "bare capture needs live"   "$(cc capture 2>&1)" "Usage: cc capture"
+printf 'main' > "$CC_HOME/live"
 no_  "rejects empty profile use" "cc add empty >/dev/null && cc use empty"
 is   "empty profile is inert"    "$(live_token)" "tok-A"
 
@@ -159,10 +166,14 @@ is "wraps past the end"       "$(_cc_next_available)"   "a"
 cc spent a >/dev/null; cc spent c >/dev/null; cc spent d >/dev/null
 is "none left"                "$(_cc_next_available)"   ""
 no_  "next fails when spent"  "cc next"
-has  "reports soonest reset"  "$(cc next 2>&1)" "earliest is"
+has  "reports soonest reset"  "$(cc next 2>&1)" "Earliest is"
 
 cc clear --all >/dev/null
 is "clear --all restores"     "$(_cc_next_available)"   "a"
+
+is  "status aliases ls"       "$(cc status)"            "$(cc ls)"
+is  "current aliases which"   "$(cc current)"           "d"
+has "usage lists aliases"     "$(cc --help)"            "status=ls"
 teardown
 
 # ---- spent markers expire on their own --------------------------------------
@@ -176,6 +187,9 @@ yes_ "marked spent"           "_cc_is_limited a"
 sleep 1.2
 no_  "expires without help"   "_cc_is_limited a"
 no_  "marker file removed"    "[ -e '$CC_HOME/profiles/a/spent' ]"
+printf 'garbage' > "$CC_HOME/profiles/a/spent"
+no_  "malformed marker ignored" "_cc_is_limited a"
+no_  "malformed marker reaped"  "[ -e '$CC_HOME/profiles/a/spent' ]"
 no_  "rejects bad duration"   "cc spent b 5x"
 is   "parses hours"           "$(_cc_parse_dur 5h)"     "18000"
 is   "parses minutes"         "$(_cc_parse_dur 90m)"    "5400"
@@ -234,6 +248,93 @@ no_  "env fails if unlinked"  "cc env nope"
 cc link a >/dev/null
 yes_ "link is idempotent"     "[ -L '$CC_HOME/envs/a/projects' ]"
 teardown
+
+# ---- output style -----------------------------------------------------------
+setup
+echo "output style"
+login_as a@example.com tok-a; cc add a >/dev/null && cc capture a >/dev/null
+login_as b@example.com tok-b; cc add b >/dev/null && cc capture b >/dev/null
+is   "plain when piped"          "$(cc ls | grep -c "$ESC")" "0"
+has  "CLICOLOR_FORCE=1 forces"   "$(CLICOLOR_FORCE=1 cc ls)" "$ESC"
+has  "FORCE_COLOR=1 forces"      "$(FORCE_COLOR=1 cc ls)"    "$ESC"
+no_  "FORCE_COLOR=0 is off"      "FORCE_COLOR=0 _cc_want_color 1"
+no_  "NO_COLOR beats force"      "NO_COLOR=1 CLICOLOR_FORCE=1 _cc_want_color 1"
+is   "colour adds no text: ls"   "$(CLICOLOR_FORCE=1 cc ls | strip)"     "$(cc ls)"
+is   "colour adds no text: help" "$(CLICOLOR_FORCE=1 cc --help | strip)" "$(cc --help)"
+is   "colour adds no text: doctor" "$(CLICOLOR_FORCE=1 cc doctor | strip)" "$(cc doctor)"
+is   "which stays raw"           "$(CLICOLOR_FORCE=1 cc which)"          "b"
+cc link b >/dev/null
+is   "env stays raw"             "$(CLICOLOR_FORCE=1 cc env b)"          "export CLAUDE_CONFIG_DIR=$CC_HOME/envs/b"
+
+has  "ls has a header"           "$(cc ls)" "PROFILE"
+has  "ls marks live"             "$(cc ls)" "→ b "
+has  "ls leaves idle unmarked"   "$(cc ls)" "  a "
+cc add c >/dev/null
+has  "ls names the capture cmd"  "$(cc ls)" "run: cc capture c"
+has  "help has section pills"    "$(cc --help)" " PROFILES "
+has  "help names the live glyph" "$(cc --help)" "→ marks live"
+
+is   "switch reports old -> new" "$(cc use a)"            "✔ Switched b → a (a@example.com)"
+is   "no-op switch is info"      "$(cc use a)"            "ℹ Already on a (a@example.com)"
+rm -f "$CC_HOME/live"
+is   "first switch says to"      "$(cc use b)"            "✔ Switched to b (b@example.com)"
+is   "spent reports"             "$(cc spent a 90m)"      "✔ Marked a spent, back in 1h30m"
+is   "clear reports"             "$(cc clear a)"          "✔ Cleared a, available again"
+is   "clear --all reports"       "$(cc clear --all)"      "✔ Cleared all spent markers"
+is   "add reports"               "$(cc add d | head -n1)" "✔ Created d"
+has  "add hints capture"         "$(cc add d)"            "↳ cc capture d"
+is   "rm reports"                "$(cc rm d | head -n1)"  "✔ Removed d"
+is   "link reports"              "$(cc link a | head -n1)" "✔ Linked env at $CC_HOME/envs/a"
+has  "link hints eval"           "$(cc link a)"           "↳ eval \"\$(cc env a)\""
+is   "error prefix"              "$(cc use nope 2>&1)"    "✖ Unknown profile 'nope'"
+mkdir -p "$CC_HOME/.lock" && touch -t 202001010000 "$CC_HOME/.lock"
+is   "warning prefix"            "$(cc use a 2>&1 >/dev/null | head -n1)" "! Clearing stale lock"
+cc spent a >/dev/null; cc spent b >/dev/null; cc rm c >/dev/null
+has  "soonest is info"           "$(cc next 2>&1)"        "ℹ Earliest is"
+teardown
+
+# ---- prompt snippets see quota state --------------------------------------
+setup
+echo "prompt state"
+login_as a@example.com tok-a; cc add a >/dev/null && cc capture a >/dev/null
+json="{\"workspace\":{\"current_dir\":\"$SANDBOX\"},\"model\":{\"display_name\":\"Opus\"}}"
+statusline() { printf '%s' "$json" | bash "$ROOT/prompt/statusline.sh"; }
+has  "statusline shows profile"  "$(statusline | strip)" "| a |"
+has  "statusline ready is green" "$(statusline)" "$(printf '\033[32ma\033[0m')"
+cc spent a 90m >/dev/null
+has  "statusline flags spent"    "$(statusline | strip)" "| a spent 1h"
+has  "statusline spent is yellow" "$(statusline)" "$(printf '\033[33ma spent')"
+cc clear a >/dev/null
+
+whens="$(sed -n "s/^when = '\(.*\)'$/\1/p" "$ROOT/prompt/starship.toml")"
+ready_when="$(printf '%s\n' "$whens" | sed -n 1p)"
+spent_when="$(printf '%s\n' "$whens" | sed -n 2p)"
+yes_ "starship ready module shows" "bash --noprofile --norc -c '$ready_when'"
+no_  "starship spent module hides" "bash --noprofile --norc -c '$spent_when'"
+cc spent a 90m >/dev/null
+no_  "starship ready module hides" "bash --noprofile --norc -c '$ready_when'"
+yes_ "starship spent module shows" "bash --noprofile --norc -c '$spent_when'"
+cc clear a >/dev/null
+
+if command -v zsh >/dev/null 2>&1; then
+    zprompt() { zsh -c "source '$ROOT/prompt/zsh.zsh'; _cc_rprompt; print -r -- \"\$RPROMPT\""; }
+    zp10k()   { zsh -c "p10k() { print -r -- \"\$@\"; }; source '$ROOT/prompt/p10k.zsh'; prompt_cc_account"; }
+    has "zsh prompt ready"       "$(zprompt)" "%F{green}a%f"
+    has "p10k ready state"       "$(zp10k)"   "-s READY"
+    cc spent a 90m >/dev/null
+    has "zsh prompt spent"       "$(zprompt)" "%F{yellow}cc:a spent%f"
+    has "p10k spent state"       "$(zp10k)"   "-s SPENT"
+fi
+teardown
+
+# ---- prompt snippets agree with the library on where the state file is -----
+echo "prompt snippets"
+# shellcheck disable=SC2016  # literal: it is what the files must contain
+default='${XDG_CONFIG_HOME:-$HOME/.config}/cc-switch'
+yes_ "library default"        "grep -qF -- 'CC_HOME:=$default}' '$ROOT/cc-switch.sh'"
+for f in zsh.zsh p10k.zsh starship.toml statusline.sh; do
+    yes_ "$f reads it"        "grep -qF -- 'CC_HOME:-$default}' '$ROOT/prompt/$f'"
+done
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

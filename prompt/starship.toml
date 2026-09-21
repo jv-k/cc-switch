@@ -1,7 +1,16 @@
-# Append to ~/.config/starship.toml and add $custom.cc to your format string.
+# Append to ~/.config/starship.toml and add $custom.cc$custom.cc_spent to your
+# format string. A custom module has one style, so quota state takes two
+# modules with complementary `when` checks: exactly one of them shows.
 [custom.cc]
-command = "cat ${CC_HOME:-$HOME/.config/cc-switch}/live 2>/dev/null"
-when = "test -s ${CC_HOME:-$HOME/.config/cc-switch}/live"
+command = "cat ${CC_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/cc-switch}/live 2>/dev/null"
+when = 'd=${CC_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/cc-switch}; p=$(cat "$d/live" 2>/dev/null) && [ -n "$p" ] && ! { e=$(cat "$d/profiles/$p/spent" 2>/dev/null) && [ "$e" -gt "$(date +%s)" ]; } 2>/dev/null'
 format = "[cc:$output]($style) "
-style = "bright-black"
+style = "green"
+shell = ["bash", "--noprofile", "--norc"]
+
+[custom.cc_spent]
+command = "cat ${CC_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/cc-switch}/live 2>/dev/null"
+when = 'd=${CC_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/cc-switch}; p=$(cat "$d/live" 2>/dev/null) && e=$(cat "$d/profiles/$p/spent" 2>/dev/null) && [ "$e" -gt "$(date +%s)" ] 2>/dev/null'
+format = "[cc:$output spent]($style) "
+style = "yellow"
 shell = ["bash", "--noprofile", "--norc"]

@@ -24,11 +24,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: install jq
-        run: command -v jq || (sudo apt-get update -qq && sudo apt-get install -y -qq jq)
+      - name: install jq and zsh
+        run: |
+          command -v jq  || (sudo apt-get update -qq && sudo apt-get install -y -qq jq)
+          command -v zsh || (sudo apt-get update -qq && sudo apt-get install -y -qq zsh)
       - name: bash
         run: bash tests/run.sh
       - name: zsh
-        run: |
-          command -v zsh || (sudo apt-get install -y -qq zsh)
-          zsh -c 'source ./cc-switch.sh && cc --help' >/dev/null
+        run: zsh -c 'source ./cc-switch.sh && source ./prompt/zsh.zsh && _cc_rprompt && cc --help' >/dev/null
