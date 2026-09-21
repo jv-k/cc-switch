@@ -261,7 +261,7 @@ call to check, not a question this tool answers.
 | `CC_CLAUDE_JSON` | `~/.claude.json` |
 | `CC_KEYCHAIN_SERVICE` | `Claude Code-credentials` |
 | `CC_ACCOUNT_KEYS` | `oauthAccount` |
-| `CC_BACKEND` | auto-detected (`keychain` or `file`) |
+| `CC_BACKEND` | auto-detected (`keychain` or `file`); forcing `file` on a Keychain machine is a no-op switch, and `cc doctor` says so |
 | `CC_PGREP_PATTERNS` | `pgrep -f` patterns: npm, `~/.claude/local`, native binary, VS Code |
 | `CC_LOCK_TIMEOUT` | `5` seconds |
 | `CC_LIMIT_DEFAULT` | `5h` |
@@ -283,7 +283,7 @@ are never styled: they are meant for prompts and `eval`.
 bash tests/run.sh
 ```
 
-117 assertions against a throwaway `HOME` with the file backend, covering the
+122 assertions against a throwaway `HOME` with the file backend, covering the
 switch round trip, background-refresh capture, drift detection, ring rotation
 with wrap-around and all-spent, marker expiry and reaping, `go`/`flip` against
 a stub `claude` binary, linked-env symlinking, command aliases, the default

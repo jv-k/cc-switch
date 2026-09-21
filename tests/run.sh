@@ -4,6 +4,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REAL_HOME="$HOME"          # captured before any setup() reassigns it
 PASS=0; FAIL=0
 
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
@@ -14,6 +15,22 @@ no_()  { if eval "$2" >/dev/null 2>&1; then bad "$1"; else ok "$1"; fi; }
 has()  { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "no '$3' in: $2" ;; esac; }
 ESC="$(printf '\033')"
 strip() { sed "s/$ESC\[[0-9;]*m//g"; }
+
+# 2026-09-21: a mis-quoted one-liner (`export HOME=$(mktemp -d) CC_HOME=$HOME/...`
+# expands $HOME to the OLD value) pointed CC_* at the real dotfiles and truncated
+# a live ~/.claude.json. Nothing here may address anything outside the sandbox.
+sandboxed() {
+    local var val
+    for var in CC_HOME CC_CLAUDE_HOME CC_CLAUDE_JSON; do
+        eval "val=\${$var:-}"
+        case "$val" in
+            "$SANDBOX"/*) ;;
+            *) printf 'REFUSING TO RUN: %s=%s is outside the sandbox %s\n' "$var" "$val" "$SANDBOX" >&2
+               return 1 ;;
+        esac
+    done
+    return 0
+}
 
 setup() {
     SANDBOX="$(mktemp -d)"
@@ -26,6 +43,7 @@ setup() {
     export CC_NO_ALIASES=1
     export CC_PGREP_PATTERNS='__cc_no_such_process__'
     unset NO_COLOR CLICOLOR_FORCE FORCE_COLOR
+    sandboxed || exit 1
     mkdir -p "$CC_CLAUDE_HOME"
     # shellcheck source=/dev/null
     . "$ROOT/cc-switch.sh"
@@ -146,6 +164,21 @@ export CC_PGREP_PATTERNS='__cc_no_such_process__'
 mkdir -p "$CC_HOME/.lock"
 no_  "honours the lock"          "CC_LOCK_TIMEOUT=0 cc use main"
 rmdir "$CC_HOME/.lock"
+
+# the harness guard itself
+yes_ "sandbox guard passes"      "sandboxed"
+no_  "guard catches real paths"  "CC_CLAUDE_JSON=$REAL_HOME/.claude.json sandboxed"
+no_  "guard catches real home"   "CC_HOME=$REAL_HOME/.config/cc-switch sandboxed"
+
+# forcing the file backend on a Keychain machine writes a file Claude Code
+# never reads: the switch looks like it worked and changes nothing
+# shellcheck disable=SC2329  # stubs, called indirectly by cc doctor
+_cc_keychain_available() { return 0; }
+has "doctor flags dead backend"  "$(cc doctor 2>&1)" "file backend is forced but this machine stores the credential in the Keychain"
+# shellcheck disable=SC2329
+_cc_keychain_available() { return 1; }
+no_ "no flag without keychain"   "cc doctor 2>&1 | grep -q 'Keychain'"
+unset -f _cc_keychain_available
 teardown
 
 # ---- credential file safety -------------------------------------------------

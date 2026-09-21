@@ -148,14 +148,17 @@ _cc_words() { printf '%s\n' "$1" | tr ' ' '\n'; }
 
 # --------------------------------------------------------------- backend ----
 
+# Does this machine hold the credential in the Keychain? Asked separately from
+# _cc_backend, which reports what is in force rather than what exists.
+_cc_keychain_available() {
+    [ "$(uname -s)" = Darwin ] || return 1
+    command -v security >/dev/null 2>&1 || return 1
+    security find-generic-password -s "$CC_KEYCHAIN_SERVICE" >/dev/null 2>&1
+}
+
 _cc_backend() {
     if [ -n "${CC_BACKEND:-}" ]; then printf '%s' "$CC_BACKEND"; return; fi
-    if [ "$(uname -s)" = Darwin ] && command -v security >/dev/null 2>&1 \
-       && security find-generic-password -s "$CC_KEYCHAIN_SERVICE" >/dev/null 2>&1; then
-        printf 'keychain'
-    else
-        printf 'file'
-    fi
+    if _cc_keychain_available; then printf 'keychain'; else printf 'file'; fi
 }
 
 # Claude Code creates the keychain item with its own account name. Reuse it so
@@ -398,6 +401,12 @@ _cc_doctor() {
     _cc_kv 'claude home'  "$CC_CLAUDE_HOME"
     _cc_kv 'claude json'  "$CC_CLAUDE_JSON"
     _cc_kv 'backend'      "$(_cc_backend)"
+    # A forced file backend on a Keychain machine writes .credentials.json,
+    # which Claude Code never reads: cc use reports success and changes nothing.
+    if [ "$(_cc_backend)" = file ] && _cc_keychain_available; then
+        _cc_warn "file backend is forced but this machine stores the credential in the Keychain."
+        _cc_warn "Switches will write a file Claude Code ignores. Unset CC_BACKEND."
+    fi
     if [ -n "$live" ]; then _cc_kv 'live marker' "$live" "$_cc_s_norm"
     else                    _cc_kv 'live marker' '(none)' "$_cc_s_dim"; fi
     _cc_kv 'live account' "$(_cc_live_email)"

@@ -37,6 +37,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `cc doctor` now warns when `CC_BACKEND=file` is forced on a machine that
+  keeps the credential in the Keychain. That combination writes a
+  `.credentials.json` Claude Code never reads, so `cc use` reported success
+  and changed nothing.
 - The running-process guard missed both current install layouts: the native
   binary (argv is just `claude`) and the VS Code extension's bundled copy. On
   a machine running either, `cc use` would swap the token underneath live
