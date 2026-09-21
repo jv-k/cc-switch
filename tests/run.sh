@@ -172,10 +172,10 @@ no_  "guard catches real home"   "CC_HOME=$REAL_HOME/.config/cc-switch sandboxed
 
 # forcing the file backend on a Keychain machine writes a file Claude Code
 # never reads: the switch looks like it worked and changes nothing
-# shellcheck disable=SC2329  # stubs, called indirectly by cc doctor
+# shellcheck disable=SC2329,SC2317  # stubs, called indirectly by cc doctor
 _cc_keychain_available() { return 0; }
 has "doctor flags dead backend"  "$(cc doctor 2>&1)" "file backend is forced but this machine stores the credential in the Keychain"
-# shellcheck disable=SC2329
+# shellcheck disable=SC2329,SC2317
 _cc_keychain_available() { return 1; }
 no_ "no flag without keychain"   "cc doctor 2>&1 | grep -q 'Keychain'"
 unset -f _cc_keychain_available
