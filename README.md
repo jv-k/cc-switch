@@ -213,9 +213,25 @@ between subs mid-task.
 
 Never switch while Claude Code is running. It holds the token in memory and
 rewrites `~/.claude.json` continuously, so a read-modify-write from outside is a
-clobber. `cc use` refuses if it sees a running process, matched against
-`CC_PGREP_PATTERNS`. Those patterns are a guess at the common install layouts
-and are worth checking against `pgrep -fl node` on your machine.
+clobber. **This includes VS Code**: the extension spawns one `claude` process
+per conversation, using the same credential as the terminal CLI, so an open tab
+in a window you forgot about is a live session. `cc use` refuses if it sees one
+and lists what it found:
+
+```
+$ cc use personal
+✖ Claude Code is running. Quit it first, or its in-memory token will be
+✖ written back over the swap when it exits. VS Code conversations count.
+  ↳ 15 × ~/.vscode/extensions/anthropic.claude-code-2.1.278-darwin-arm64/resources/native-binary/claude
+  ↳ 2 × claude
+```
+
+`cc doctor` shows the same breakdown, so you can find the stragglers before
+switching. Detection is `pgrep -f` against `CC_PGREP_PATTERNS`, which covers
+the npm install, the old `~/.claude/local` wrapper, the native binary, and the
+VS Code extension's bundled copy. An install layout not on that list is
+invisible to the guard, so check yours against `cc doctor` while a session is
+open.
 
 Access tokens refresh in the background during a session. `cc use` captures the
 live credential into the outgoing profile before switching away, but only when
@@ -246,7 +262,7 @@ call to check, not a question this tool answers.
 | `CC_KEYCHAIN_SERVICE` | `Claude Code-credentials` |
 | `CC_ACCOUNT_KEYS` | `oauthAccount` |
 | `CC_BACKEND` | auto-detected (`keychain` or `file`) |
-| `CC_PGREP_PATTERNS` | Claude Code process patterns |
+| `CC_PGREP_PATTERNS` | `pgrep -f` patterns: npm, `~/.claude/local`, native binary, VS Code |
 | `CC_LOCK_TIMEOUT` | `5` seconds |
 | `CC_LIMIT_DEFAULT` | `5h` |
 | `CC_CLAUDE_BIN` | `claude` |
@@ -267,10 +283,11 @@ are never styled: they are meant for prompts and `eval`.
 bash tests/run.sh
 ```
 
-109 assertions against a throwaway `HOME` with the file backend, covering the
+117 assertions against a throwaway `HOME` with the file backend, covering the
 switch round trip, background-refresh capture, drift detection, ring rotation
 with wrap-around and all-spent, marker expiry and reaping, `go`/`flip` against
-a stub `claude` binary, linked-env symlinking, command aliases, the colour
+a stub `claude` binary, linked-env symlinking, command aliases, the default
+process patterns against native and VS Code command lines, the colour
 gate and that styling adds no text, message wording, the prompt snippets'
 quota state (statusline and Starship `when` checks in bash, zsh and p10k under
 zsh when present) and their agreement with the library on `CC_HOME`, and the

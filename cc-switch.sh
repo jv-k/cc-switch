@@ -25,7 +25,10 @@
 # CC_SHARED: state tree that linked envs share. Resolved lazily by _cc_shared
 # so it tracks CC_CLAUDE_HOME if that is changed after sourcing.
 : "${CC_LINK_PATHS:=projects history.jsonl todos CLAUDE.md agents commands skills plugins}"
-: "${CC_PGREP_PATTERNS:=[c]laude/cli\.js [.]claude/local/claude}"  # space-separated, no spaces within a pattern
+# Space-separated pgrep -f patterns, no spaces within one. Cover the npm
+# install, the old ~/.claude/local wrapper, the native binary (argv is just
+# `claude`) and the VS Code extension's bundled copy.
+: "${CC_PGREP_PATTERNS:=[c]laude/cli\.js [.]claude/local/claude ^claude([[:space:]]|$) [n]ative-binary/claude}"
 
 # ----------------------------------------------------------------- style ----
 #
@@ -214,14 +217,23 @@ _cc_live_email()    { _cc_email_of "$CC_CLAUDE_JSON"; }
 _cc_which()         { cat "$CC_HOME/live" 2>/dev/null; }
 _cc_profile_email() { _cc_email_of "$CC_HOME/profiles/$1/account.json"; }
 
-_cc_claude_running() {
-    local hits
-    command -v pgrep >/dev/null 2>&1 || return 1
-    hits="$(_cc_words "$CC_PGREP_PATTERNS" | while IFS= read -r p; do
-                [ -n "$p" ] && pgrep -f "$p" 2>/dev/null
-            done | wc -l | tr -d ' ')"
-    [ "${hits:-0}" -gt 0 ]
+# Running Claude Code processes grouped by executable: "<count> <path>" per
+# line, $HOME shortened to ~. The path is what tells a VS Code tab from a
+# terminal session.
+_cc_claude_procs() {
+    local pid exe
+    command -v pgrep >/dev/null 2>&1 || return 0
+    _cc_words "$CC_PGREP_PATTERNS" | while IFS= read -r p; do
+        [ -n "$p" ] && pgrep -f "$p" 2>/dev/null
+    done | sort -un | while IFS= read -r pid; do
+        exe="$(ps -o args= -p "$pid" 2>/dev/null)"; exe="${exe%% *}"
+        [ -n "$exe" ] || continue
+        case "$exe" in "$HOME"/*) exe="~${exe#"$HOME"}" ;; esac
+        printf '%s\n' "$exe"
+    done | sort | uniq -c | sed 's/^ *//'
 }
+
+_cc_claude_running() { [ -n "$(_cc_claude_procs)" ]; }
 
 # ------------------------------------------------------ capture and apply ----
 
@@ -268,13 +280,15 @@ _cc_apply() {
 # -------------------------------------------------------------- commands ----
 
 _cc_use() {
-    local target="$1" live rc=0 snap_cred snap_json
+    local target="$1" live rc=0 snap_cred snap_json procs
     _cc_valid_name "$target" || { _cc_err "Usage: cc use <profile>"; return 1; }
     _cc_require_profile "$target" || return 1
 
-    if _cc_claude_running; then
-        _cc_err "Claude is running. Quit it first, or its in-memory token will be"
-        _cc_err "written back over the swap when it exits."
+    procs="$(_cc_claude_procs)"
+    if [ -n "$procs" ]; then
+        _cc_err "Claude Code is running. Quit it first, or its in-memory token will be"
+        _cc_err "written back over the swap when it exits. VS Code conversations count."
+        printf '%s\n' "$procs" | while read -r n exe; do _cc_emit 2 $'\033[2m' "  $_cc_i_trace" "$n × $exe"; done
         return 1
     fi
 
@@ -377,8 +391,9 @@ _cc_kv() {   # key value [sgr]
 }
 
 _cc_doctor() {
-    local live
+    local live procs
     live="$(_cc_which)"
+    procs="$(_cc_claude_procs)"
     _cc_kv 'cc home'      "$CC_HOME"
     _cc_kv 'claude home'  "$CC_CLAUDE_HOME"
     _cc_kv 'claude json'  "$CC_CLAUDE_JSON"
@@ -392,8 +407,12 @@ _cc_doctor() {
     _cc_kv 'account keys' "$CC_ACCOUNT_KEYS"
     if command -v jq >/dev/null 2>&1; then _cc_kv jq "$(command -v jq)"
     else                                   _cc_kv jq MISSING "$_cc_s_err"; fi
-    if _cc_claude_running; then _cc_kv 'claude running' yes "$_cc_s_attn"
-    else                        _cc_kv 'claude running' no "$_cc_s_ok"; fi
+    if [ -n "$procs" ]; then
+        _cc_kv 'claude running' "yes ($(printf '%s\n' "$procs" | awk '{ n += $1 } END { print n }'))" "$_cc_s_attn"
+        printf '%s\n' "$procs" | while read -r n exe; do _cc_trace "$n × $exe"; done
+    else
+        _cc_kv 'claude running' no "$_cc_s_ok"
+    fi
 }
 
 # ------------------------------------------------------------- rotation ----
@@ -594,7 +613,8 @@ _cc_usage() {
     _cc_section 'ALIASES'
     printf '  %snew=add  sync=capture  list|status=ls  limit=spent  unspent=clear%s\n' "$_cc_s_dim" "$_cc_s_end"
     printf '  %scurrent=which  remove=rm%s\n\n' "$_cc_s_dim" "$_cc_s_end"
-    printf '%s%s%s Quit claude before switching. It holds the token in memory.\n' "$_cc_s_attn" "$_cc_i_warn" "$_cc_s_end"
+    printf '%s%s%s Quit Claude Code before switching, VS Code conversations included. It holds the token in memory.\n' \
+        "$_cc_s_attn" "$_cc_i_warn" "$_cc_s_end"
 }
 
 cc() {

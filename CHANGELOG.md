@@ -37,6 +37,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The running-process guard missed both current install layouts: the native
+  binary (argv is just `claude`) and the VS Code extension's bundled copy. On
+  a machine running either, `cc use` would swap the token underneath live
+  sessions. `CC_PGREP_PATTERNS` now covers them, and `cc use` and `cc doctor`
+  list the processes they found, grouped by executable, so a forgotten VS Code
+  tab is identifiable.
 - `CC_SHARED` resolved at source time and went stale if `CC_CLAUDE_HOME`
   changed afterwards. Now resolved lazily.
 - The Starship snippet ignored `XDG_CONFIG_HOME` when resolving `CC_HOME`, so

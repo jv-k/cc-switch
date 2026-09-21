@@ -120,6 +120,24 @@ bash -c 'exec -a cc_test_marker sleep 41' & SLEEPER=$!
 sleep 0.3
 no_  "refuses while claude runs" "cc use main"
 yes_ "matches non-first pattern" "_cc_claude_running"
+has  "refusal lists processes"   "$(cc use main 2>&1)" "↳ 1 × cc_test_marker"
+has  "doctor counts processes"   "$(cc doctor)"        "claude running : yes (1)"
+has  "doctor lists processes"    "$(cc doctor)"        "↳ 1 × cc_test_marker"
+kill "$SLEEPER" 2>/dev/null; wait "$SLEEPER" 2>/dev/null
+
+# the shipped patterns must see a native install and the VS Code extension,
+# whose binaries are `claude` and .../native-binary/claude respectively
+# shellcheck disable=SC2016  # the inner script expands in the child bash
+defaults="$(env -u CC_PGREP_PATTERNS bash -c '. "$1"; printf "%s" "$CC_PGREP_PATTERNS"' _ "$ROOT/cc-switch.sh")"
+matches() { _cc_words "$defaults" | while IFS= read -r p; do printf '%s\n' "$1" | grep -Eq -- "$p" && echo hit; done; }
+has  "default sees bare claude"  "$(matches 'claude')"                       "hit"
+has  "default sees claude+args"  "$(matches 'claude --resume')"              "hit"
+is   "default skips claude-foo"  "$(matches 'claude-usage')"                 ""
+has  "default sees vscode"       "$(matches '/x/native-binary/claude --output-format stream-json')" "hit"
+mkdir -p "$SANDBOX/native-binary"
+bash -c "exec -a '$SANDBOX/native-binary/claude' sleep 41" & SLEEPER=$!
+sleep 0.3
+has  "lists vscode with ~"       "$(CC_PGREP_PATTERNS="$defaults" _cc_claude_procs)" "1 ~/native-binary/claude"
 kill "$SLEEPER" 2>/dev/null; wait "$SLEEPER" 2>/dev/null
 # no negative assertion here: a wrapping shell's own argv can contain the marker
 # string, so pgrep -f matches the harness rather than the target
